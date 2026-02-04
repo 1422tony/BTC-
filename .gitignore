@@ -1,1 +1,24 @@
-.env  
+# --- 1. 安全性 (絕對不能上傳！) ---
+.env
+.env.*
+*.key
+secrets.py
+
+# --- 2. Python 編譯檔與快取 (垃圾檔案) ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- 3. 虛擬環境 (很大且每台電腦不同，不需上傳) ---
+venv/
+.venv/
+env/
+ENV/
+
+# --- 4. IDE 設定 (VS Code/PyCharm 個人設定) ---
+.vscode/
+.idea/
+
+# --- 5. 作業系統生成的垃圾 ---
+.DS_Store
+Thumbs.db
