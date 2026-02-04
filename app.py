@@ -1,4 +1,5 @@
 import os
+import time
 import ccxt
 from flask import Flask, jsonify, render_template_string
 from dotenv import load_dotenv
@@ -7,11 +8,22 @@ load_dotenv()
 
 app = Flask(__name__)
 
+# --- 設定區 ---
+# 強制緩存時間 (秒)：在這段時間內，絕對不會重複呼叫幣安 API
+CACHE_DURATION = 20 
+
+# 全局變數用來存儲緩存
+global_cache = {
+    "data": None,
+    "last_update_time": 0
+}
+
 # 初始化：只需要讀取權限
 exchange = ccxt.binance({
     'apiKey': os.getenv('BINANCE_READ_KEY'),
     'secret': os.getenv('BINANCE_READ_SECRET'),
-    'options': {'defaultType': 'future'}
+    'options': {'defaultType': 'future'},
+    'enableRateLimit': True  # 啟用 CCXT 內建的頻率限制保護
 })
 
 # --- 核心演算法 ---
@@ -19,78 +31,87 @@ def calculate_rebalance_plan(target_leverage=1.5):
     try:
         # 1. 獲取數據
         balance = exchange.fetch_balance()
-        # 合約帳戶保證金餘額 (Total Margin Balance)
         margin_balance = float(balance['info']['totalWalletBalance']) 
         
-        # 獲取 BTC 持倉
         positions = balance['info']['positions']
         btc_pos = next((p for p in positions if p['symbol'] == 'BTCUSDT'), None)
         
         if not btc_pos:
             return {"error": "No BTC Position found"}
             
-        # 計算當前狀態
-        amt = abs(float(btc_pos['positionAmt'])) # 持倉數量 (顆)
-        entry_price = float(btc_pos['entryPrice'])
+        amt = abs(float(btc_pos['positionAmt']))
         
-        # 獲取即時價格
         ticker = exchange.fetch_ticker('BTC/USDT')
         current_price = ticker['last']
         
         position_value = amt * current_price
         current_leverage = position_value / margin_balance if margin_balance > 0 else 0
         
-        # --- 計算再平衡建議 ---
-        # 目標公式： PositionValue / (CurrentMargin + ToAdd) = TargetLeverage
-        # 變換公式： ToAdd = (PositionValue / TargetLeverage) - CurrentMargin
-        
+        # --- 計算再平衡 ---
         required_margin = position_value / target_leverage
         diff_usdt = required_margin - margin_balance
         
-        # 為了要補這筆 USDT，我需要賣多少現貨 BTC？
         btc_to_sell = 0
         if diff_usdt > 0:
-            btc_to_sell = diff_usdt / current_price * 1.01 # 多賣 1% 當手續費緩衝
+            btc_to_sell = diff_usdt / current_price * 1.01
 
         return {
+            "success": True,
+            "timestamp": time.strftime("%H:%M:%S"), # 紀錄資料時間
             "price": current_price,
             "amt": amt,
             "position_value": round(position_value, 2),
             "margin_balance": round(margin_balance, 2),
             "current_leverage": round(current_leverage, 2),
             "target_leverage": target_leverage,
-            "action_needed": diff_usdt > 10, # 只有差額大於 10U 才建議操作
+            "action_needed": diff_usdt > 10,
             "instruction": {
-                "transfer_usdt": round(diff_usdt, 2), # 正數代表要補錢，負數代表可以領錢
+                "transfer_usdt": round(diff_usdt, 2),
                 "sell_spot_btc": round(btc_to_sell, 5) if diff_usdt > 0 else 0
             }
         }
 
     except Exception as e:
-        return {"error": str(e)}
+        return {"success": False, "error": str(e)}
 
-# --- API 接口 ---
+# --- API 接口 (包含緩存邏輯) ---
 @app.route('/api/status')
 def api_status():
+    current_time = time.time()
+    
+    # 檢查緩存：如果距離上次更新還不到 CACHE_DURATION 秒，直接回傳舊資料
+    # 這樣可以 100% 確保不會因為前端刷新而爆 API
+    if global_cache["data"] and (current_time - global_cache["last_update_time"] < CACHE_DURATION):
+        print("Using Cache Data (No API Call)") # Log 方便觀察
+        return jsonify(global_cache["data"])
+
+    # 如果緩存過期，才真的去呼叫幣安
+    print("Fetching New Data from Binance...")
     data = calculate_rebalance_plan()
+    
+    # 只有當成功獲取數據時才更新緩存
+    if data.get("success"):
+        global_cache["data"] = data
+        global_cache["last_update_time"] = current_time
+    
     return jsonify(data)
 
-# --- 前端頁面 (您可以在這裡發揮前端實力，這裡先給個簡單版) ---
+# --- 前端頁面 ---
 @app.route('/')
 def index():
-    # 使用 render_template_string 方便演示，實際專案建議分開寫 .html
     return render_template_string("""
     <!DOCTYPE html>
     <html lang="zh-TW">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>BTC 套利指揮官</title>
+        <title>BTC 套利指揮官 (安全版)</title>
         <script src="https://cdn.tailwindcss.com"></script>
     </head>
     <body class="bg-gray-900 text-white min-h-screen flex items-center justify-center">
         <div class="max-w-md w-full bg-gray-800 p-8 rounded-xl shadow-2xl" id="app">
-            <h1 class="text-2xl font-bold mb-6 text-center text-yellow-400">⚡ 套利監控面板</h1>
+            <h1 class="text-2xl font-bold mb-2 text-center text-yellow-400">⚡ 套利監控面板</h1>
+            <p class="text-center text-gray-500 text-xs mb-6">資料更新時間: <span id="data-time">--</span></p>
             
             <div id="loading" class="text-center">載入中...</div>
             
@@ -119,7 +140,10 @@ def index():
                     </ul>
                 </div>
                 
-                <p class="text-xs text-center text-gray-500 mt-4">目標槓桿: 1.5x | 每 10 秒自動刷新</p>
+                <div class="text-xs text-center text-gray-500 mt-4">
+                    目標槓桿: 1.5x | 自動刷新: 30秒<br>
+                    <span class="text-red-400">注意：請勿頻繁手動刷新網頁</span>
+                </div>
             </div>
         </div>
 
@@ -130,24 +154,24 @@ def index():
                     const data = await res.json();
                     
                     if(data.error) {
-                        alert(data.error);
+                        console.error(data.error);
+                        // 如果出錯，不要 alert 騷擾，顯示在 console 就好
                         return;
                     }
 
                     document.getElementById('loading').classList.add('hidden');
                     document.getElementById('content').classList.remove('hidden');
                     
+                    document.getElementById('data-time').innerText = data.timestamp;
                     document.getElementById('price').innerText = `$${data.price.toLocaleString()}`;
                     
-                    // 槓桿顏色邏輯
                     const levEl = document.getElementById('lev');
                     levEl.innerText = `${data.current_leverage}x`;
                     levEl.className = `text-2xl font-bold ${data.current_leverage > 2.0 ? 'text-red-500' : 'text-green-400'}`;
 
-                    // 判斷是否顯示操作建議
                     const diff = data.instruction.transfer_usdt;
                     
-                    if (data.current_leverage > 1.8 && diff > 0) { // 設定觸發顯示的門檻 (例如槓桿 > 1.8 才叫你動)
+                    if (data.current_leverage > 1.8 && diff > 0) {
                         document.getElementById('action-box').classList.add('hidden');
                         document.getElementById('warning-box').classList.remove('hidden');
                         document.getElementById('sell-amt').innerText = data.instruction.sell_spot_btc;
@@ -162,7 +186,8 @@ def index():
             }
 
             fetchStatus();
-            setInterval(fetchStatus, 10000); // 每10秒刷新
+            // 改成 30 秒刷新一次，更加安全
+            setInterval(fetchStatus, 30000); 
         </script>
     </body>
     </html>
