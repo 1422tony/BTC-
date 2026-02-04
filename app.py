@@ -105,7 +105,7 @@ def index():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>BTC 套利指揮官 (安全版)</title>
+        <title>BTC 套利指揮官 (除錯版)</title>
         <script src="https://cdn.tailwindcss.com"></script>
     </head>
     <body class="bg-gray-900 text-white min-h-screen flex items-center justify-center">
@@ -113,7 +113,15 @@ def index():
             <h1 class="text-2xl font-bold mb-2 text-center text-yellow-400">⚡ 套利監控面板</h1>
             <p class="text-center text-gray-500 text-xs mb-6">資料更新時間: <span id="data-time">--</span></p>
             
-            <div id="loading" class="text-center">載入中...</div>
+            <div id="loading" class="text-center text-blue-400 animate-pulse font-bold">
+                數據載入中... (請稍候)
+            </div>
+            
+            <div id="error-display" class="hidden bg-red-900/80 border border-red-500 p-4 rounded text-center mb-4">
+                <h3 class="font-bold text-red-300">發生錯誤</h3>
+                <p id="error-msg" class="text-xs text-white break-all mt-1">--</p>
+                <button onclick="location.reload()" class="mt-2 bg-red-700 hover:bg-red-600 text-white px-3 py-1 rounded text-xs">重新整理</button>
+            </div>
             
             <div id="content" class="hidden space-y-4">
                 <div class="grid grid-cols-2 gap-4 text-center">
@@ -141,25 +149,34 @@ def index():
                 </div>
                 
                 <div class="text-xs text-center text-gray-500 mt-4">
-                    目標槓桿: 1.5x | 自動刷新: 30秒<br>
-                    <span class="text-red-400">注意：請勿頻繁手動刷新網頁</span>
+                    目標槓桿: 1.5x | 自動刷新: 30秒
                 </div>
             </div>
         </div>
 
         <script>
             async function fetchStatus() {
+                // 每次刷新前，先顯示載入中（如果你喜歡這種效果，不喜歡可以註解掉這行）
+                // document.getElementById('loading').classList.remove('hidden');
+
                 try {
                     const res = await fetch('/api/status');
                     const data = await res.json();
                     
-                    if(data.error) {
-                        console.error(data.error);
-                        // 如果出錯，不要 alert 騷擾，顯示在 console 就好
-                        return;
+                    // 1. 無論成功失敗，先隱藏載入畫面
+                    document.getElementById('loading').classList.add('hidden');
+
+                    // 2. 檢查是否有錯誤
+                    if(data.success === false || data.error) {
+                        // 顯示錯誤區塊
+                        document.getElementById('content').classList.add('hidden');
+                        document.getElementById('error-display').classList.remove('hidden');
+                        document.getElementById('error-msg').innerText = data.error || "未知錯誤";
+                        return; // 中斷執行
                     }
 
-                    document.getElementById('loading').classList.add('hidden');
+                    // 3. 如果成功，隱藏錯誤區塊，顯示內容
+                    document.getElementById('error-display').classList.add('hidden');
                     document.getElementById('content').classList.remove('hidden');
                     
                     document.getElementById('data-time').innerText = data.timestamp;
@@ -181,12 +198,14 @@ def index():
                         document.getElementById('action-box').classList.remove('hidden');
                     }
                 } catch (e) {
-                    console.error(e);
+                    // 網路連線層級的錯誤 (例如後端掛了)
+                    document.getElementById('loading').classList.add('hidden');
+                    document.getElementById('error-display').classList.remove('hidden');
+                    document.getElementById('error-msg').innerText = "連線失敗: " + e.message;
                 }
             }
 
             fetchStatus();
-            // 改成 30 秒刷新一次，更加安全
             setInterval(fetchStatus, 30000); 
         </script>
     </body>
