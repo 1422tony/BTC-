@@ -1,0 +1,4 @@
+ccxt
+flask
+python-dotenv
+gunicorn
